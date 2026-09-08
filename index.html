@@ -295,7 +295,7 @@
       <button class="btn ghost" id="exportPrevBtn">📄 Exportar relatório PDF</button>
     </div>
     <table class="data">
-      <thead><tr><th>Veículo</th><th>Frota</th><th>Config. A/C</th><th>Última manutenção</th><th>Situação</th><th></th></tr></thead>
+      <thead><tr><th>Veículo</th><th>Frota</th><th>Config. A/C</th><th>Última manutenção</th><th>Situação</th><th>Previsão próxima</th><th></th></tr></thead>
       <tbody id="prevBody"></tbody>
     </table>
   </div>
@@ -539,6 +539,7 @@ function cleanText(t){ return t ? t.replace(/[\t\n\r]+/g,' ').trim() : t; }
 function isoToBR(iso){ if(!iso) return null; const [y,m,d]=iso.split('-'); return d+'/'+m+'/'+y; }
 function todayIso(){ return new Date().toISOString().slice(0,10); }
 function daysBetween(isoA, isoB){ return Math.round((new Date(isoB) - new Date(isoA)) / 86400000); }
+function addDaysIso(iso, days){ if(!iso) return null; const d = new Date(iso+'T00:00:00'); d.setDate(d.getDate()+days); return d.toISOString().slice(0,10); }
 
 function parseAcConfig(cfg){
   if(!cfg) return {acFiltroTipo:null, acQtdFiltros:null, acUsaManta:false, acQtdMantas:null};
@@ -684,12 +685,13 @@ function acStatus(v){
     // Trust the spreadsheet's own dates: whatever was last marked done (green) is the real
     // baseline — count purely by calendar days from there, no KM involved.
     let remDias = last.date_iso!=null ? (rule.dias - daysBetween(last.date_iso, todayIso())) : null;
+    let nextDate = addDaysIso(last.date_iso, rule.dias);
     let status='ok';
     if(remDias!=null){
       if(remDias<=0) status='atrasado';
       else if(remDias<=5) status='atencao';
     }
-    return {type:rule.type, status, remDias, lastDate:last.date_display||isoToBR(last.date_iso), lastKm:last.km,
+    return {type:rule.type, status, remDias, nextDate, lastDate:last.date_display||isoToBR(last.date_iso), lastKm:last.km,
       text:`Troca a cada ${rule.dias} dias.`};
   }
 
@@ -701,7 +703,8 @@ function acStatus(v){
     if(sinceSwapCount >= rule.swapAfterWashes) status='atrasado';
     else if(sinceSwapCount === rule.swapAfterWashes-1) status='atencao';
     const actionTxt = sinceSwapCount >= rule.swapAfterWashes ? 'Trocar manta e filtros agora' : `Lavagem (${sinceSwapCount+1}/${rule.swapAfterWashes+1})`;
-    return {type:rule.type, status, sinceSwapCount, swapAfterWashes:rule.swapAfterWashes, actionTxt,
+    const nextDate = lastWash? addDaysIso(lastWash.date_iso, rule.washDays) : null;
+    return {type:rule.type, status, sinceSwapCount, swapAfterWashes:rule.swapAfterWashes, actionTxt, nextDate,
       lastDate:lastWash? (lastWash.date_display||isoToBR(lastWash.date_iso)) : null,
       text:`Lavagem da manta; troca de manta e filtros na ${rule.swapAfterWashes+1}ª lavagem.`};
   }
@@ -717,6 +720,7 @@ function acStatus(v){
     const lastFiltro = filtroEvents.length? filtroEvents[filtroEvents.length-1] : last;
     let filtroDue = null; // true=vencido, false=em dia, null=sem dado
     if(lastFiltro && lastFiltro.date_iso) filtroDue = daysBetween(lastFiltro.date_iso, todayIso()) >= rule.filtroDias;
+    const nextDate = lastFiltro? addDaysIso(lastFiltro.date_iso, rule.filtroDias) : null;
     let mantaStatus='ok';
     if(sinceSwapCount!=null){
       if(sinceSwapCount >= rule.swapAfterWashes) mantaStatus='atrasado';
@@ -729,7 +733,7 @@ function acStatus(v){
       : (sinceSwapCount >= rule.swapAfterWashes ? 'Manta: TROCAR agora' : `Manta: lavagem (${sinceSwapCount+1}/${rule.swapAfterWashes} antes da troca)`);
     const filtroTxt = filtroDue==null ? 'Filtro: sem registro anterior de troca'
       : (filtroDue ? 'Filtro: TROCAR agora' : 'Filtro: em dia');
-    return {type:rule.type, status, sinceSwapCount, swapAfterWashes:rule.swapAfterWashes, filtroDue, mantaTxt, filtroTxt,
+    return {type:rule.type, status, sinceSwapCount, swapAfterWashes:rule.swapAfterWashes, filtroDue, mantaTxt, filtroTxt, nextDate,
       text:`Manta: lavar ${rule.swapAfterWashes}x antes de trocar. Filtro: trocar a cada ${rule.filtroDias} dias.`};
   }
 
@@ -895,7 +899,7 @@ function renderRevisao(){
 function renderPrev(){
   const vs = filteredVehicles('searchPrev','fleetFilterPrev');
   const tbody = document.getElementById('prevBody');
-  if(vs.length===0){ tbody.innerHTML = '<tr><td colspan="6" class="empty-note">Nenhum veículo encontrado.</td></tr>'; return; }
+  if(vs.length===0){ tbody.innerHTML = '<tr><td colspan="7" class="empty-note">Nenhum veículo encontrado.</td></tr>'; return; }
   tbody.innerHTML = vs.map(v=>{
     const st = acStatus(v);
     let sitTxt = st.text;
@@ -908,12 +912,14 @@ function renderPrev(){
     }
     const pillClass = pillClassFor(st.status);
     const pillTxt = pillTextFor(st.status);
+    const previsao = st.nextDate ? isoToBR(st.nextDate) : '—';
     return `<tr>
       <td class="vid-cell clickable" data-vid="${v.vehKey}">${v.id} ${companyTagHtml(v)}</td>
       <td class="clickable" data-vid="${v.vehKey}">${fleetLabel(v.fleet)}</td>
       <td class="clickable" data-vid="${v.vehKey}">${v.ac_config||'—'}</td>
       <td class="clickable" data-vid="${v.vehKey}" style="font-size:12.5px;">${sitTxt}</td>
       <td class="clickable" data-vid="${v.vehKey}"><span class="status-pill ${pillClass}">${pillTxt}</span></td>
+      <td class="clickable mono" data-vid="${v.vehKey}">${previsao}</td>
       <td><button class="btn ghost sm" data-add-vid="${v.vehKey}">+ Registrar A/C</button></td>
     </tr>`;
   }).join('');
@@ -1065,7 +1071,7 @@ function openDetail(vid){
       <div class="field"><div class="k">Configuração A/C</div><div class="v">${v.ac_config||'—'}</div></div>
     </div>
     ${tiersHtml? `<div class="section-title"><h4 class="rev">Status de revisão</h4></div><div class="tier-card">${tiersHtml}</div>` : ''}
-    <div class="callout"><strong>A/C:</strong> ${ac.text}${ac.type==='manta4_filtro25'? `<br>${ac.mantaTxt} · ${ac.filtroTxt}` : ''}${ac.type==='weekly_songz'? `<br>${ac.actionTxt}` : ''}</div>
+    <div class="callout"><strong>A/C:</strong> ${ac.text}${ac.type==='manta4_filtro25'? `<br>${ac.mantaTxt} · ${ac.filtroTxt}` : ''}${ac.type==='weekly_songz'? `<br>${ac.actionTxt}` : ''}${ac.nextDate? `<br>Previsão da próxima preventiva: <strong>${isoToBR(ac.nextDate)}</strong>` : ''}</div>
     <div class="section-title"><h4 class="rev">Histórico de revisão</h4></div>
     ${revHtml}
     <div class="section-title"><h4 class="ac">Histórico de ar-condicionado</h4></div>
@@ -1555,8 +1561,9 @@ function buildAcReportHtml(){
     <td>${r.v.empresa||'—'}</td>
     <td>${r.v.ac_config||'—'}</td>
     <td>${acSituationText(r.st)}</td>
+    <td class="mono">${r.st.nextDate? isoToBR(r.st.nextDate) : '—'}</td>
   </tr>`;
-  return reportShell('Relatório de Preventivas de Ar-Condicionado', overdue, upcoming, rowHtml, ['Frota','Veículo','Empresa','Configuração A/C','Situação']);
+  return reportShell('Relatório de Preventivas de Ar-Condicionado', overdue, upcoming, rowHtml, ['Frota','Veículo','Empresa','Configuração A/C','Situação','Previsão próxima']);
 }
 
 function buildVeiculosReportHtml(){
