@@ -303,6 +303,7 @@
     <div class="toolbar">
       <input type="search" id="searchVeiculos" placeholder="Buscar veículo, chassi ou placa…">
       <div class="spacer"></div>
+      <button class="btn ghost" id="exportVeiculosBtn">📄 Imprimir relação de veículos</button>
       <button class="btn primary" id="openAddVehicleBtn">+ Adicionar veículo</button>
     </div>
     <table class="data">
@@ -1556,6 +1557,42 @@ function buildAcReportHtml(){
   </tr>`;
   return reportShell('Relatório de Preventivas de Ar-Condicionado', overdue, upcoming, rowHtml, ['Frota','Veículo','Empresa','Configuração A/C','Situação']);
 }
+
+function buildVeiculosReportHtml(){
+  const vs = allVehicles().sort((a,b)=>a.id.localeCompare(b.id, undefined, {numeric:true}));
+  const dataGerado = new Date().toLocaleString('pt-BR');
+  const rows = vs.map(v=>`<tr>
+    <td class="mono">${v.id}${v.previousPrefixo? ` <span style="color:#888;font-size:10px;">(ex-${v.previousPrefixo})</span>`:''}</td>
+    <td>${fleetLabel(v.fleet)}</td>
+    <td>${v.empresa||'—'}</td>
+    <td class="mono">${v.chassi||'—'}</td>
+    <td class="mono">${v.placa||'—'}</td>
+    <td>${v.acFiltroTipo||'—'}${v.acQtdFiltros!=null? ` (${v.acQtdFiltros})`:''}</td>
+    <td>${v.acUsaManta? `Sim${v.acQtdMantas!=null? ' ('+v.acQtdMantas+')':''}` : 'Não'}</td>
+  </tr>`).join('');
+  return `
+    <div class="report">
+      <div class="report-header">
+        <img src="data:image/png;base64,${BRT_LOGO_B64}" class="report-logo-brt" alt="BRT">
+        <div class="report-title">
+          <h1>Relação de Veículos</h1>
+          <div class="report-sub">Frota BRT · Gerado em ${dataGerado}</div>
+        </div>
+        <img src="data:image/png;base64,${MAAS_LOGO_B64}" class="report-logo-maas" alt="m.aas">
+      </div>
+      <h2 class="sec-info">Veículos cadastrados <span class="count-badge">${vs.length}</span></h2>
+      <table class="report-table">
+        <thead><tr><th>Prefixo</th><th>Frota</th><th>Empresa</th><th>Chassi</th><th>Placa</th><th>Filtro A/C</th><th>Usa manta</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="report-footer">Documento gerado automaticamente pelo Painel de Preventivas — Frota BRT · BY Gustavo Coutinho</div>
+    </div>`;
+}
+document.getElementById('exportVeiculosBtn').addEventListener('click', ()=>{
+  document.getElementById('printArea').innerHTML = buildVeiculosReportHtml();
+  document.body.classList.add('printing');
+  window.print();
+});
 
 function buildVehicleExtractHtml(vehKey){
   const v = combinedVehicle(vehKey);
