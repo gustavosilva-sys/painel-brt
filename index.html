@@ -812,6 +812,7 @@ function renderKms(){
       const input = document.getElementById('kminput-'+vid);
       const val = parseInt(input.value,10);
       if(!val && val!==0){ showToast('Informe um KM válido.'); return; }
+      await refreshCurrentKm(); // make sure we're comparing against what's really saved, not a stale local copy
       const prevKm = combinedVehicle(vid).currentKm;
       if(prevKm!=null && val < prevKm){
         if(!confirm(`O KM informado (${val.toLocaleString('pt-BR')}) é menor que o último registrado (${prevKm.toLocaleString('pt-BR')}). Confirma mesmo assim?`)) return;
@@ -933,17 +934,20 @@ function renderVeiculos(){
       const vid = btn.dataset.saveVid;
       const newPrefixo = document.getElementById('reg-prefixo-'+vid).value.trim();
       if(!newPrefixo){ showToast('Informe o prefixo.'); return; }
-      vehicleRegistry[vid].prefixo = newPrefixo;
-      vehicleRegistry[vid].chassi = document.getElementById('reg-chassi-'+vid).value.trim() || null;
-      vehicleRegistry[vid].placa = document.getElementById('reg-placa-'+vid).value.trim() || null;
-      vehicleRegistry[vid].empresa = document.getElementById('reg-empresa-'+vid).value;
-      vehicleRegistry[vid].fleet = document.getElementById('reg-fleet-'+vid).value;
-      vehicleRegistry[vid].acFiltroTipo = document.getElementById('reg-filtrotipo-'+vid).value.trim() || null;
-      const qtdF = document.getElementById('reg-qtdfiltros-'+vid).value;
-      vehicleRegistry[vid].acQtdFiltros = qtdF!==''? parseInt(qtdF,10) : null;
-      vehicleRegistry[vid].acUsaManta = document.getElementById('reg-usamanta-'+vid).checked;
-      const qtdM = document.getElementById('reg-qtdmantas-'+vid).value;
-      vehicleRegistry[vid].acQtdMantas = qtdM!==''? parseInt(qtdM,10) : null;
+      const edited = {
+        prefixo: newPrefixo,
+        chassi: document.getElementById('reg-chassi-'+vid).value.trim() || null,
+        placa: document.getElementById('reg-placa-'+vid).value.trim() || null,
+        empresa: document.getElementById('reg-empresa-'+vid).value,
+        fleet: document.getElementById('reg-fleet-'+vid).value,
+        acFiltroTipo: document.getElementById('reg-filtrotipo-'+vid).value.trim() || null,
+        acQtdFiltros: document.getElementById('reg-qtdfiltros-'+vid).value!==''? parseInt(document.getElementById('reg-qtdfiltros-'+vid).value,10) : null,
+        acUsaManta: document.getElementById('reg-usamanta-'+vid).checked,
+        acQtdMantas: document.getElementById('reg-qtdmantas-'+vid).value!==''? parseInt(document.getElementById('reg-qtdmantas-'+vid).value,10) : null,
+      };
+      await refreshRegistry();
+      if(!vehicleRegistry[vid]){ showToast('Este veículo foi removido por outra pessoa.'); renderAll(); return; }
+      Object.assign(vehicleRegistry[vid], edited);
       await saveRegistry();
       showToast('Veículo atualizado.');
       renderAll();
@@ -971,6 +975,7 @@ document.getElementById('vehicleForm').addEventListener('submit', async (e)=>{
   e.preventDefault();
   const prefixo = document.getElementById('nv_prefixo').value.trim();
   if(!prefixo){ showToast('Informe o prefixo.'); return; }
+  await refreshRegistry();
   if(vehicleRegistry[prefixo]){ showToast('Já existe um veículo com esse prefixo.'); return; }
   vehicleRegistry[prefixo] = {
     prefixo, previousPrefixo:null,
@@ -1074,7 +1079,9 @@ const storageAdapter = {
       return await window.storage.get(key, true);
     }
     if(!REMOTE_API_BASE) throw new Error('Nenhum backend de armazenamento configurado (REMOTE_API_BASE vazio).');
-    const res = await fetch(`${REMOTE_API_BASE}/?key=${encodeURIComponent(key)}`);
+    // cache:'no-store' + a timestamp busts any browser/proxy cache so we always get
+    // what's really in KV right now, not a stale copy from an earlier visit.
+    const res = await fetch(`${REMOTE_API_BASE}/?key=${encodeURIComponent(key)}&_=${Date.now()}`, {cache:'no-store'});
     if(!res.ok) throw new Error('Falha ao ler '+key);
     const data = await res.json();
     return (data && data.value!=null) ? {value:data.value} : null;
@@ -1084,7 +1091,7 @@ const storageAdapter = {
       return await window.storage.set(key, value, true);
     }
     if(!REMOTE_API_BASE) throw new Error('Nenhum backend de armazenamento configurado (REMOTE_API_BASE vazio).');
-    const res = await fetch(`${REMOTE_API_BASE}/?key=${encodeURIComponent(key)}`, {method:'POST', body:value});
+    const res = await fetch(`${REMOTE_API_BASE}/?key=${encodeURIComponent(key)}`, {method:'POST', body:value, cache:'no-store'});
     if(!res.ok) throw new Error('Falha ao salvar '+key);
     return true;
   }
@@ -1122,6 +1129,28 @@ async function loadShared(){
 async function saveManualEntries(){ try{ await storageAdapter.set('manual_entries_v1', JSON.stringify(manualEntries)); }catch(e){ showToast('Não foi possível salvar.'); } }
 async function saveCurrentKm(){ try{ await storageAdapter.set('current_km_v1', JSON.stringify(currentKmStore)); }catch(e){ showToast('Não foi possível salvar o KM.'); } }
 async function saveRegistry(){ try{ await storageAdapter.set('vehicle_registry_v2', JSON.stringify(vehicleRegistry)); }catch(e){ showToast('Não foi possível salvar o cadastro.'); } }
+
+// Pull the latest copy of one shared key from the backend right before merging a local
+// change into it and saving — without this, two people editing around the same time can
+// silently overwrite each other's update (last save wins over the whole blob).
+async function refreshCurrentKm(){ try{ const res = await storageAdapter.get('current_km_v1'); if(res) currentKmStore = JSON.parse(res.value); }catch(e){} }
+async function refreshManualEntries(){ try{ const res = await storageAdapter.get('manual_entries_v1'); if(res) manualEntries = JSON.parse(res.value); }catch(e){} }
+async function refreshRegistry(){ try{ const res = await storageAdapter.get('vehicle_registry_v2'); if(res) vehicleRegistry = JSON.parse(res.value); }catch(e){} }
+async function refreshScheduled(){ try{ const res = await storageAdapter.get('scheduled_revisions_v1'); if(res) scheduledRevisions = JSON.parse(res.value); }catch(e){} }
+
+// Any open dialog means the person is mid-edit — skip a background refresh then, so we
+// don't yank data out from under them or reset a form they're filling in.
+function anyModalOpen(){
+  return ['detailBackdrop','modalBackdrop','vehicleModalBackdrop'].some(id=>{
+    const el = document.getElementById(id);
+    return el && el.classList.contains('show');
+  });
+}
+async function backgroundRefresh(){
+  if(anyModalOpen()) return;
+  await Promise.all([refreshManualEntries(), refreshCurrentKm(), refreshRegistry(), refreshScheduled()]);
+  renderAll();
+}
 
 // ================= Agendar Revisão =================
 let scheduledRevisions = [];
@@ -1255,6 +1284,7 @@ document.getElementById('agendaForm').addEventListener('submit', async (e)=>{
   const obs = document.getElementById('ag_obs').value.trim() || null;
   if(!date){ showToast('Escolha a data agendada.'); return; }
   if(date < todayIso()){ showToast('A data agendada não pode ser no passado.'); return; }
+  await refreshScheduled();
   scheduledRevisions.push({id:'ag_'+Date.now(), vehKey, km, date, obs, status:'pendente', createdAt:new Date().toISOString()});
   await saveScheduled();
   document.getElementById('agendaForm').reset();
@@ -1372,10 +1402,12 @@ document.getElementById('addForm').addEventListener('submit', async (e)=>{
     swapManta = document.getElementById('f_swap_manta').checked;
     swapFiltro = document.getElementById('f_swap_filtro').checked;
   }
+  await refreshManualEntries();
   if(!manualEntries[vid]) manualEntries[vid] = [];
   manualEntries[vid].push({type, date_iso:date, km, milestone, note, swapManta, swapFiltro, ts:Date.now()});
   await saveManualEntries();
   if(km!=null){
+    await refreshCurrentKm();
     const prevKm = combinedVehicle(vid).currentKm;
     if(prevKm==null || km >= prevKm){
       currentKmStore[vid] = {km, updated_at:new Date().toISOString()};
@@ -1584,6 +1616,9 @@ function renderAll(){
   await loadShared();
   await loadScheduled();
   renderAll();
+  // Cloudflare KV can take a little while to propagate a save to every edge location,
+  // and this app doesn't use live sockets — so poll for what teammates saved every 20s.
+  setInterval(backgroundRefresh, 20000);
 })();
 </script>
 </body>
