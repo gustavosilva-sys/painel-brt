@@ -679,6 +679,16 @@ function acStatus(v){
   const rule = acRuleFor(v);
   const hist = v.acRaw.slice().sort((a,b)=>(a.date_iso||'0').localeCompare(b.date_iso||'0'));
   const last = hist.length? hist[hist.length-1] : null;
+  const SEVERITY = {ok:0, atencao:1, registrado:1, retido:2, atrasado:2};
+  // The spreadsheet's own color on the last real entry is a direct signal from the team
+  // (vermelho = atrasado, laranja = atenção) — never show a friendlier status than that.
+  function withSheetColorFloor(status, sourceEntry){
+    const sheetStatus = sourceEntry && sourceEntry.status;
+    if(sheetStatus && SEVERITY[sheetStatus]!=null && SEVERITY[sheetStatus] > SEVERITY[status]){
+      return sheetStatus === 'registrado' ? status : sheetStatus;
+    }
+    return status;
+  }
 
   if(rule.type === 'ac_dias'){
     if(!last) return {type:rule.type, status:'pendente', text:'Sem histórico registrado.'};
@@ -691,6 +701,7 @@ function acStatus(v){
       if(remDias<=0) status='atrasado';
       else if(remDias<=5) status='atencao';
     }
+    status = withSheetColorFloor(status, last);
     return {type:rule.type, status, remDias, nextDate, lastDate:last.date_display||isoToBR(last.date_iso), lastKm:last.km,
       text:`Troca a cada ${rule.dias} dias.`};
   }
@@ -702,6 +713,7 @@ function acStatus(v){
     let status='ok';
     if(sinceSwapCount >= rule.swapAfterWashes) status='atrasado';
     else if(sinceSwapCount === rule.swapAfterWashes-1) status='atencao';
+    status = withSheetColorFloor(status, lastWash);
     const actionTxt = sinceSwapCount >= rule.swapAfterWashes ? 'Trocar manta e filtros agora' : `Lavagem (${sinceSwapCount+1}/${rule.swapAfterWashes+1})`;
     const nextDate = lastWash? addDaysIso(lastWash.date_iso, rule.washDays) : null;
     return {type:rule.type, status, sinceSwapCount, swapAfterWashes:rule.swapAfterWashes, actionTxt, nextDate,
@@ -726,13 +738,14 @@ function acStatus(v){
       if(sinceSwapCount >= rule.swapAfterWashes) mantaStatus='atrasado';
       else if(sinceSwapCount === rule.swapAfterWashes-1) mantaStatus='atencao';
     }
-    const filtroStatus = filtroDue===true ? 'atrasado' : 'ok';
+    let filtroStatus = filtroDue===true ? 'atrasado' : 'ok';
+    filtroStatus = withSheetColorFloor(filtroStatus, lastFiltro);
     const rank = {ok:0, atencao:1, atrasado:2};
     const status = rank[mantaStatus] >= rank[filtroStatus] ? mantaStatus : filtroStatus;
     const mantaTxt = sinceSwapCount==null ? 'Lavagens ainda não registradas pelo painel'
       : (sinceSwapCount >= rule.swapAfterWashes ? 'Manta: TROCAR agora' : `Manta: lavagem (${sinceSwapCount+1}/${rule.swapAfterWashes} antes da troca)`);
     const filtroTxt = filtroDue==null ? 'Filtro: sem registro anterior de troca'
-      : (filtroDue ? 'Filtro: TROCAR agora' : 'Filtro: em dia');
+      : (filtroStatus==='atrasado' ? 'Filtro: TROCAR agora' : 'Filtro: em dia');
     return {type:rule.type, status, sinceSwapCount, swapAfterWashes:rule.swapAfterWashes, filtroDue, mantaTxt, filtroTxt, nextDate,
       text:`Manta: lavar ${rule.swapAfterWashes}x antes de trocar. Filtro: trocar a cada ${rule.filtroDias} dias.`};
   }
