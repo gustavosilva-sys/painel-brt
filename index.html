@@ -234,7 +234,7 @@
   <div class="badge-team"><span class="dot"></span> Compartilhado com a equipe</div>
 </header>
 
-<nav class="tabs">
+<nav class="tabs" id="mainTabsNav">
   <button data-tab="painel" class="active">Painel</button>
   <button data-tab="kms">KMs</button>
   <button data-tab="revisao">Revisão</button>
@@ -312,6 +312,12 @@
   </div>
 
   <div class="tabpanel" id="tab-agendar">
+    <nav class="tabs" style="padding:0 0 16px;border-bottom:1px solid var(--steel-600);margin-bottom:18px;">
+      <button data-subtab="agendamentos" class="active">Agendamentos</button>
+      <button data-subtab="historico">Histórico (por mês)</button>
+    </nav>
+
+    <div class="subtabpanel active" id="subtab-agendamentos">
     <div class="toolbar">
       <div class="spacer"></div>
       <button class="btn ghost" id="exportPreAgendaBtn">📄 Exportar pré-agendamento</button>
@@ -347,6 +353,19 @@
       <thead><tr><th>Veículo</th><th>Frota</th><th>KM informado</th><th>Data agendada</th><th>Observação</th><th>Status</th><th></th></tr></thead>
       <tbody id="agendaBody"></tbody>
     </table>
+    </div>
+
+    <div class="subtabpanel" id="subtab-historico" style="display:none;">
+      <div class="toolbar">
+        <select id="hist_mes"></select>
+        <div class="spacer"></div>
+        <span class="updated-note" id="hist_count"></span>
+      </div>
+      <table class="data">
+        <thead><tr><th>Veículo</th><th>Frota</th><th>Data agendada</th><th>Concluída em</th><th>Observação</th></tr></thead>
+        <tbody id="historicoBody"></tbody>
+      </table>
+    </div>
   </div>
 
 </main>
@@ -503,7 +522,7 @@ function acRuleFor(v){
   const cfg = (v.ac_config||'').toUpperCase();
   if(v.fleet === "VEÍCULO ELETRA/CAIO/SCÂNIA") return {type:"weekly_songz", washDays:7, swapAfterWashes:7};
   if(v.fleet === "VEÍCULOS BYD" || v.fleet === "VEÍCULO ELETRA - Revisão") return {type:"manta4_filtro25", swapAfterWashes:4, filtroDias:25};
-  if(cfg.includes('SPHEROS') || cfg.includes('ARCO')) return {type:"km_dias", km:3000, dias:25};
+  if(cfg.includes('SPHEROS') || cfg.includes('ARCO')) return {type:"ac_dias", dias:25};
   return {type:"none"};
 }
 
@@ -658,16 +677,18 @@ function acStatus(v){
   const hist = v.acRaw.slice().sort((a,b)=>(a.date_iso||'0').localeCompare(b.date_iso||'0'));
   const last = hist.length? hist[hist.length-1] : null;
 
-  if(rule.type === 'km_dias'){
+  if(rule.type === 'ac_dias'){
     if(!last) return {type:rule.type, status:'pendente', text:'Sem histórico registrado.'};
-    let remKm=null;
-    if(v.currentKm!=null && last.km!=null) remKm = (last.km + rule.km) - v.currentKm;
-    let prazoDiasVencido = last.date_iso!=null ? (daysBetween(last.date_iso, todayIso()) >= rule.dias) : null;
+    // Trust the spreadsheet's own dates: whatever was last marked done (green) is the real
+    // baseline — count purely by calendar days from there, no KM involved.
+    let remDias = last.date_iso!=null ? (rule.dias - daysBetween(last.date_iso, todayIso())) : null;
     let status='ok';
-    if((remKm!=null && remKm<=0) || prazoDiasVencido===true) status='atrasado';
-    else if(remKm!=null && remKm<=300) status='atencao';
-    return {type:rule.type, status, remKm, prazoDiasVencido, lastDate:last.date_display||isoToBR(last.date_iso), lastKm:last.km,
-      text:`Troca a cada ${rule.km.toLocaleString('pt-BR')} km ou ${rule.dias} dias (o que vier primeiro).`};
+    if(remDias!=null){
+      if(remDias<=0) status='atrasado';
+      else if(remDias<=5) status='atencao';
+    }
+    return {type:rule.type, status, remDias, lastDate:last.date_display||isoToBR(last.date_iso), lastKm:last.km,
+      text:`Troca a cada ${rule.dias} dias.`};
   }
 
   if(rule.type === 'weekly_songz'){
@@ -876,9 +897,8 @@ function renderPrev(){
   tbody.innerHTML = vs.map(v=>{
     const st = acStatus(v);
     let sitTxt = st.text;
-    if(st.type==='km_dias'){
-      sitTxt = st.remKm!=null ? (st.remKm<=0? `${Math.abs(st.remKm).toLocaleString('pt-BR')} km atrasado`:`faltam ${st.remKm.toLocaleString('pt-BR')} km`) : st.text;
-      if(st.prazoDiasVencido) sitTxt += ' · prazo de 25 dias também vencido';
+    if(st.type==='ac_dias'){
+      sitTxt = st.remDias!=null ? (st.remDias<=0? `${Math.abs(st.remDias)}d atrasado`:`faltam ${st.remDias}d`) : st.text;
     } else if(st.type==='weekly_songz'){
       sitTxt = st.actionTxt;
     } else if(st.type==='manta4_filtro25'){
@@ -1247,7 +1267,7 @@ function renderAgenda(){
   tbody.querySelectorAll('[data-done-id]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const item = scheduledRevisions.find(i=>i.id===btn.dataset.doneId);
-      if(item){ item.status = 'feita'; await saveScheduled(); renderAgenda(); showToast('Revisão marcada como feita.'); }
+      if(item){ item.status = 'feita'; item.completedAt = todayIso(); await saveScheduled(); renderAgenda(); renderHistorico(); showToast('Revisão marcada como feita.'); }
     });
   });
   tbody.querySelectorAll('[data-resched-id]').forEach(btn=>{
@@ -1275,6 +1295,47 @@ function renderAgenda(){
     });
   });
 }
+
+// ---- Histórico (revisões efetivadas, por mês) ----
+const MONTH_NAMES_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+function monthKey(iso){ return iso ? iso.slice(0,7) : null; } // 'YYYY-MM'
+function monthLabel(key){ const [y,m] = key.split('-'); return `${MONTH_NAMES_PT[parseInt(m,10)-1]}/${y}`; }
+
+function renderHistorico(){
+  const done = scheduledRevisions.filter(i=>i.status==='feita');
+  const sel = document.getElementById('hist_mes');
+  const keys = [...new Set(done.map(i=>monthKey(i.completedAt||i.date)).filter(Boolean))].sort().reverse();
+  const prevSel = sel.value;
+  sel.innerHTML = keys.length
+    ? keys.map(k=>`<option value="${k}">${monthLabel(k)}</option>`).join('')
+    : '<option value="">Nenhum mês com revisões concluídas</option>';
+  if(keys.includes(prevSel)) sel.value = prevSel;
+  const chosen = sel.value;
+  const items = done.filter(i=>monthKey(i.completedAt||i.date)===chosen)
+    .sort((a,b)=>(b.completedAt||b.date||'').localeCompare(a.completedAt||a.date||''));
+  document.getElementById('hist_count').textContent = chosen ? `${items.length} revisão${items.length!==1?'ões':''} concluída${items.length!==1?'s':''} em ${monthLabel(chosen)}` : '';
+  const tbody = document.getElementById('historicoBody');
+  tbody.innerHTML = items.length ? items.map(item=>{
+    const v = combinedVehicle(item.vehKey);
+    return `<tr>
+      <td class="vid-cell">${v.id} ${companyTagHtml(v)}</td>
+      <td>${fleetLabel(v.fleet)}</td>
+      <td>${isoToBR(item.date)}</td>
+      <td>${item.completedAt? isoToBR(item.completedAt) : '—'}</td>
+      <td style="font-size:12.5px;">${item.obs? cleanText(item.obs):'—'}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="5" class="empty-note">Nenhuma revisão concluída neste mês.</td></tr>';
+}
+document.getElementById('hist_mes').addEventListener('change', renderHistorico);
+document.querySelectorAll('#tab-agendar nav.tabs button[data-subtab]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('#tab-agendar nav.tabs button[data-subtab]').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('subtab-agendamentos').style.display = btn.dataset.subtab==='agendamentos' ? '' : 'none';
+    document.getElementById('subtab-historico').style.display = btn.dataset.subtab==='historico' ? '' : 'none';
+    if(btn.dataset.subtab==='historico') renderHistorico();
+  });
+});
 
 document.getElementById('agendaForm').addEventListener('submit', async (e)=>{
   e.preventDefault();
@@ -1423,10 +1484,8 @@ document.getElementById('addForm').addEventListener('submit', async (e)=>{
 
 // ================= PDF report export =================
 function acSituationText(st){
-  if(st.type==='km_dias'){
-    let txt = st.remKm!=null ? (st.remKm<=0? `${Math.abs(st.remKm).toLocaleString('pt-BR')} km atrasado`:`faltam ${st.remKm.toLocaleString('pt-BR')} km`) : st.text;
-    if(st.prazoDiasVencido) txt += ' · prazo de 25 dias também vencido';
-    return txt;
+  if(st.type==='ac_dias'){
+    return st.remDias!=null ? (st.remDias<=0? `${Math.abs(st.remDias)}d atrasado`:`faltam ${st.remDias}d`) : st.text;
   }
   if(st.type==='weekly_songz') return st.actionTxt;
   if(st.type==='manta4_filtro25') return `${st.mantaTxt} · ${st.filtroTxt}`;
@@ -1583,9 +1642,9 @@ document.getElementById('exportRevisaoBtn').addEventListener('click', ()=>printR
 document.getElementById('exportPrevBtn').addEventListener('click', ()=>printReport('ac'));
 
 // ================= Tabs =================
-document.querySelectorAll('nav.tabs button').forEach(btn=>{
+document.querySelectorAll('#mainTabsNav button').forEach(btn=>{
   btn.addEventListener('click', ()=>{
-    document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('#mainTabsNav button').forEach(b=>b.classList.remove('active'));
     document.querySelectorAll('.tabpanel').forEach(p=>p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('tab-'+btn.dataset.tab).classList.add('active');
@@ -1610,6 +1669,7 @@ function renderAll(){
   renderPrev();
   renderVeiculos();
   renderAgenda();
+  renderHistorico();
 }
 
 (async function init(){
