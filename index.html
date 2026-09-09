@@ -57,11 +57,37 @@
   }
   input:focus,select:focus,textarea:focus{border-color:var(--amber-dim);}
 
-  .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--steel-600);border:1px solid var(--steel-600);border-radius:8px;overflow:hidden;margin-bottom:22px;box-shadow:var(--shadow);}
-  .summary .stat{background:var(--asphalt-850);padding:16px 20px;}
-  .summary .stat .num{font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:600;line-height:1;}
-  .summary .stat .lbl{margin-top:5px;font-size:12px;color:var(--paper-500);}
-  .summary .stat.ok .num{color:var(--ok);} .summary .stat.pendente .num{color:var(--warn);} .summary .stat.atencao .num{color:var(--danger);}
+  .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px;}
+  .summary .stat{
+    position:relative;display:flex;align-items:center;gap:14px;
+    background:var(--asphalt-850);border:1px solid var(--steel-600);border-radius:10px;
+    padding:16px 18px;box-shadow:var(--shadow);
+    transition:border-color .15s ease;
+  }
+  .summary .stat:hover{border-color:var(--steel-500);}
+  .summary .stat .badge{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex:none;}
+  .summary .stat.total .badge{background:rgba(232,163,61,.14);}
+  .summary .stat.ok .badge{background:rgba(61,220,132,.14);}
+  .summary .stat.pendente .badge{background:rgba(255,201,77,.14);}
+  .summary .stat.atencao .badge{background:rgba(226,86,74,.14);}
+  .summary .stat .icon{width:22px;height:22px;flex:none;}
+  .summary .stat.total .icon{color:var(--amber);}
+  .summary .stat.ok .icon{color:var(--ok);} .summary .stat.pendente .icon{color:var(--warn);} .summary .stat.atencao .icon{color:var(--danger);}
+  .summary .stat .num{font-family:'JetBrains Mono',monospace;font-size:26px;font-weight:600;line-height:1;color:var(--paper-100);}
+  .summary .stat .lbl{margin-top:4px;font-size:12px;color:var(--paper-500);}
+  .summary .stat.has-tip{cursor:help;}
+  .summary .tooltip-panel{
+    display:none;position:absolute;top:100%;left:18px;margin-top:8px;
+    background:var(--asphalt-800);border:1px solid var(--steel-600);border-radius:8px;
+    padding:10px 12px;min-width:230px;max-width:300px;max-height:240px;overflow-y:auto;
+    z-index:30;box-shadow:0 10px 28px rgba(0,0,0,.45);
+  }
+  .summary .stat.has-tip:hover .tooltip-panel{display:block;}
+  .tooltip-panel .tt-title{font-size:10.5px;color:var(--paper-500);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;}
+  .tooltip-panel .tt-item{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:4px 0;border-bottom:1px solid var(--asphalt-750);}
+  .tooltip-panel .tt-item:last-child{border-bottom:none;}
+  .tooltip-panel .tt-item .tt-vid{font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--paper-100);}
+  .tooltip-panel .tt-item .tt-src{color:var(--paper-500);white-space:nowrap;}
 
   .home-grid{display:grid;grid-template-columns:250px 1fr;gap:22px;align-items:start;}
   @media (max-width:900px){.home-grid{grid-template-columns:1fr;}}
@@ -295,7 +321,7 @@
       <button class="btn ghost" id="exportPrevBtn">📄 Exportar relatório PDF</button>
     </div>
     <table class="data">
-      <thead><tr><th>Veículo</th><th>Frota</th><th>Config. A/C</th><th>Última manutenção</th><th>Situação</th><th>Previsão próxima</th><th></th></tr></thead>
+      <thead><tr><th>Veículo</th><th>Frota</th><th>Config. A/C</th><th>Última manutenção</th><th>Situação</th><th>Vencimento / Previsão</th><th></th></tr></thead>
       <tbody id="prevBody"></tbody>
     </table>
   </div>
@@ -660,6 +686,15 @@ function overallRevisionHealth(v){
   if(statuses.some(s=>s.status==='atencao')) return 'pendente';
   return 'ok';
 }
+// Combines Revisão AND A/C into one general health used for the home list, the summary
+// counters and the vehicle header pill — a vehicle overdue on either front should show up.
+function overallHealth(v){
+  const revHealth = overallRevisionHealth(v);
+  const ac = acStatus(v);
+  const acMapped = ac.status==='atrasado' ? 'atencao' : (ac.status==='atencao' ? 'pendente' : 'ok');
+  const rank = {ok:0, pendente:1, atencao:2};
+  return rank[acMapped] > rank[revHealth] ? acMapped : revHealth;
+}
 function pillClassFor(status){
   if(status==='ok') return 'ok';
   if(status==='atrasado') return 'atencao';
@@ -702,7 +737,11 @@ function acStatus(v){
       else if(remDias<=5) status='atencao';
     }
     status = withSheetColorFloor(status, last);
-    return {type:rule.type, status, remDias, nextDate, lastDate:last.date_display||isoToBR(last.date_iso), lastKm:last.km,
+    // dueDate is what a report should print: for a real overdue item this is never in the
+    // future. If day-math alone hadn't caught up yet but the sheet already flagged it (red),
+    // the entry's own date is the honest answer for "venceu em".
+    let dueDate = (nextDate && nextDate <= todayIso()) ? nextDate : (status==='atrasado' ? last.date_iso : nextDate);
+    return {type:rule.type, status, remDias, nextDate, dueDate, lastDate:last.date_display||isoToBR(last.date_iso), lastKm:last.km,
       text:`Troca a cada ${rule.dias} dias.`};
   }
 
@@ -716,7 +755,8 @@ function acStatus(v){
     status = withSheetColorFloor(status, lastWash);
     const actionTxt = sinceSwapCount >= rule.swapAfterWashes ? 'Trocar manta e filtros agora' : `Lavagem (${sinceSwapCount+1}/${rule.swapAfterWashes+1})`;
     const nextDate = lastWash? addDaysIso(lastWash.date_iso, rule.washDays) : null;
-    return {type:rule.type, status, sinceSwapCount, swapAfterWashes:rule.swapAfterWashes, actionTxt, nextDate,
+    const dueDate = (nextDate && nextDate <= todayIso()) ? nextDate : (status==='atrasado' && lastWash ? lastWash.date_iso : nextDate);
+    return {type:rule.type, status, sinceSwapCount, swapAfterWashes:rule.swapAfterWashes, actionTxt, nextDate, dueDate,
       lastDate:lastWash? (lastWash.date_display||isoToBR(lastWash.date_iso)) : null,
       text:`Lavagem da manta; troca de manta e filtros na ${rule.swapAfterWashes+1}ª lavagem.`};
   }
@@ -746,7 +786,8 @@ function acStatus(v){
       : (sinceSwapCount >= rule.swapAfterWashes ? 'Manta: TROCAR agora' : `Manta: lavagem (${sinceSwapCount+1}/${rule.swapAfterWashes} antes da troca)`);
     const filtroTxt = filtroDue==null ? 'Filtro: sem registro anterior de troca'
       : (filtroStatus==='atrasado' ? 'Filtro: TROCAR agora' : 'Filtro: em dia');
-    return {type:rule.type, status, sinceSwapCount, swapAfterWashes:rule.swapAfterWashes, filtroDue, mantaTxt, filtroTxt, nextDate,
+    const dueDate = (nextDate && nextDate <= todayIso()) ? nextDate : (filtroStatus==='atrasado' && lastFiltro ? lastFiltro.date_iso : nextDate);
+    return {type:rule.type, status, sinceSwapCount, swapAfterWashes:rule.swapAfterWashes, filtroDue, mantaTxt, filtroTxt, nextDate, dueDate,
       text:`Manta: lavar ${rule.swapAfterWashes}x antes de trocar. Filtro: trocar a cada ${rule.filtroDias} dias.`};
   }
 
@@ -757,14 +798,53 @@ function acStatus(v){
 function renderSummary(){
   const vs = allVehicles();
   const total = vs.length;
-  const ok = vs.filter(v=>overallRevisionHealth(v)==='ok').length;
-  const pendente = vs.filter(v=>overallRevisionHealth(v)==='pendente').length;
-  const atencao = vs.filter(v=>overallRevisionHealth(v)==='atencao').length;
+  const ok = vs.filter(v=>overallHealth(v)==='ok').length;
+  const pendente = vs.filter(v=>overallHealth(v)==='pendente').length;
+  const atencao = vs.filter(v=>overallHealth(v)==='atencao').length;
+  const ICONS = {
+    total: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="10" rx="2"/><circle cx="7.5" cy="17.5" r="1.5"/><circle cx="16.5" cy="17.5" r="1.5"/><path d="M3 11h18"/></svg>',
+    ok: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 5-5"/></svg>',
+    pendente: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>',
+    atencao: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l9.5 16.5H2.5L12 3.5z"/><path d="M12 10v4"/><circle cx="12" cy="17" r="0.6" fill="currentColor" stroke="none"/></svg>',
+  };
+  // Build "who and why" lists for the two levels that matter (pendente / atencao) — em dia and
+  // total don't need an explanation, so no tooltip is built for those.
+  function reasonsFor(level){
+    return vs.filter(v=>overallHealth(v)===level).map(v=>{
+      const revLevel = overallRevisionHealth(v);
+      const acLevel = (()=>{ const s = acStatus(v).status; return s==='atrasado'?'atencao':(s==='atencao'?'pendente':'ok'); })();
+      const srcs = [];
+      if(revLevel===level) srcs.push('Revisão');
+      if(acLevel===level) srcs.push('A/C');
+      return {id:v.id, src: srcs.join(' + ') || '—'};
+    }).sort((a,b)=>a.id.localeCompare(b.id, undefined, {numeric:true}));
+  }
+  function tooltipHtml(title, items){
+    if(!items.length) return '';
+    return `<div class="tooltip-panel"><div class="tt-title">${title}</div>${items.map(i=>`<div class="tt-item"><span class="tt-vid">${i.id}</span><span class="tt-src">${i.src}</span></div>`).join('')}</div>`;
+  }
+  const pendenteReasons = reasonsFor('pendente');
+  const atencaoReasons = reasonsFor('atencao');
+
   document.getElementById('summary').innerHTML = `
-    <div class="stat"><div class="num">${total}</div><div class="lbl">Veículos monitorados</div></div>
-    <div class="stat ok"><div class="num">${ok}</div><div class="lbl">Em dia</div></div>
-    <div class="stat pendente"><div class="num">${pendente}</div><div class="lbl">Próximo do vencimento</div></div>
-    <div class="stat atencao"><div class="num">${atencao}</div><div class="lbl">Atenção / atrasado</div></div>
+    <div class="stat total">
+      <div class="badge">${ICONS.total}</div>
+      <div><div class="num">${total}</div><div class="lbl">Veículos monitorados</div></div>
+    </div>
+    <div class="stat ok">
+      <div class="badge">${ICONS.ok}</div>
+      <div><div class="num">${ok}</div><div class="lbl">Em dia</div></div>
+    </div>
+    <div class="stat pendente${pendenteReasons.length? ' has-tip':''}">
+      <div class="badge">${ICONS.pendente}</div>
+      <div><div class="num">${pendente}</div><div class="lbl">Próximo do vencimento</div></div>
+      ${tooltipHtml('Próximos — por veículo', pendenteReasons)}
+    </div>
+    <div class="stat atencao${atencaoReasons.length? ' has-tip':''}">
+      <div class="badge">${ICONS.atencao}</div>
+      <div><div class="num">${atencao}</div><div class="lbl">Atenção / atrasado</div></div>
+      ${tooltipHtml('Vencidos — por veículo', atencaoReasons)}
+    </div>
   `;
   renderChart(ok, pendente, atencao, total);
 }
@@ -817,7 +897,7 @@ function renderVehList(){
     return `<div class="fleet-block">
       <div class="fleet-head"><span class="fdot"></span><h3>${fleetLabel(f)}</h3><span class="count">${list.length} veículo${list.length>1?'s':''}</span></div>
       <div class="veh-list">${list.map(v=>{
-        const health = overallRevisionHealth(v);
+        const health = overallHealth(v);
         return `<div class="veh-row" data-vid="${v.vehKey}">
           <span class="status-dot ${health}"></span>
           <span class="vid">${v.id}${v.previousPrefixo? `<div class="prev-prefix">ex-${v.previousPrefixo}</div>`:''}</span>
@@ -925,9 +1005,11 @@ function renderPrev(){
     }
     const pillClass = pillClassFor(st.status);
     const pillTxt = pillTextFor(st.status);
-    const previsao = st.nextDate ? isoToBR(st.nextDate) : '—';
+    const isOverdue = st.status==='atrasado';
+    const dateToShow = isOverdue ? st.dueDate : st.nextDate;
+    const previsao = dateToShow ? (isOverdue? `<strong>${isoToBR(dateToShow)}</strong>` : isoToBR(dateToShow)) : '—';
     return `<tr>
-      <td class="vid-cell clickable" data-vid="${v.vehKey}">${v.id} ${companyTagHtml(v)}</td>
+      <td class="vid-cell clickable" data-vid="${v.vehKey}">${isOverdue? `<strong>${v.id}</strong>` : v.id} ${companyTagHtml(v)}</td>
       <td class="clickable" data-vid="${v.vehKey}">${fleetLabel(v.fleet)}</td>
       <td class="clickable" data-vid="${v.vehKey}">${v.ac_config||'—'}</td>
       <td class="clickable" data-vid="${v.vehKey}" style="font-size:12.5px;">${sitTxt}</td>
@@ -1070,7 +1152,7 @@ function openDetail(vid){
     <div class="detail-head">
       <div><h2>${v.id} ${companyTagHtml(v)}</h2><div class="meta">${fleetLabel(v.fleet)}${v.previousPrefixo? ' · ex-'+v.previousPrefixo:''}</div></div>
       <div class="detail-actions">
-        <span class="status-pill ${overallRevisionHealth(v)}">${STATUS_LABELS[overallRevisionHealth(v)] || 'Em dia'}</span>
+        <span class="status-pill ${overallHealth(v)}">${STATUS_LABELS[overallHealth(v)] || 'Em dia'}</span>
         <button class="btn ghost sm" id="detailAddRevBtn">+ Registrar revisão</button>
         <button class="btn ghost sm" id="detailAddAcBtn">+ Registrar A/C</button>
         <button class="btn ghost sm" id="detailExtractBtn">📄 Exportar extrato</button>
@@ -1084,7 +1166,7 @@ function openDetail(vid){
       <div class="field"><div class="k">Configuração A/C</div><div class="v">${v.ac_config||'—'}</div></div>
     </div>
     ${tiersHtml? `<div class="section-title"><h4 class="rev">Status de revisão</h4></div><div class="tier-card">${tiersHtml}</div>` : ''}
-    <div class="callout"><strong>A/C:</strong> ${ac.text}${ac.type==='manta4_filtro25'? `<br>${ac.mantaTxt} · ${ac.filtroTxt}` : ''}${ac.type==='weekly_songz'? `<br>${ac.actionTxt}` : ''}${ac.nextDate? `<br>Previsão da próxima preventiva: <strong>${isoToBR(ac.nextDate)}</strong>` : ''}</div>
+    <div class="callout"><strong>A/C:</strong> ${ac.text}${ac.type==='manta4_filtro25'? `<br>${ac.mantaTxt} · ${ac.filtroTxt}` : ''}${ac.type==='weekly_songz'? `<br>${ac.actionTxt}` : ''}${ac.status==='atrasado' && ac.dueDate? `<br>Venceu em: <strong>${isoToBR(ac.dueDate)}</strong>` : (ac.nextDate? `<br>Previsão da próxima preventiva: <strong>${isoToBR(ac.nextDate)}</strong>` : '')}</div>
     <div class="section-title"><h4 class="rev">Histórico de revisão</h4></div>
     ${revHtml}
     <div class="section-title"><h4 class="ac">Histórico de ar-condicionado</h4></div>
@@ -1568,7 +1650,17 @@ function buildAcReportHtml(){
   });
   const sortFn = (a,b)=>a.v.id.localeCompare(b.v.id, undefined, {numeric:true});
   overdue.sort(sortFn); upcoming.sort(sortFn);
-  const rowHtml = (r)=>`<tr>
+  const dataGerado = new Date().toLocaleString('pt-BR');
+
+  const overdueRowHtml = (r)=>`<tr>
+    <td>${fleetLabel(r.v.fleet)}</td>
+    <td class="mono"><strong>${r.v.id}</strong></td>
+    <td>${r.v.empresa||'—'}</td>
+    <td>${r.v.ac_config||'—'}</td>
+    <td>${acSituationText(r.st)}</td>
+    <td class="mono"><strong>${r.st.dueDate? isoToBR(r.st.dueDate) : '—'}</strong></td>
+  </tr>`;
+  const upcomingRowHtml = (r)=>`<tr>
     <td>${fleetLabel(r.v.fleet)}</td>
     <td class="mono">${r.v.id}</td>
     <td>${r.v.empresa||'—'}</td>
@@ -1576,7 +1668,34 @@ function buildAcReportHtml(){
     <td>${acSituationText(r.st)}</td>
     <td class="mono">${r.st.nextDate? isoToBR(r.st.nextDate) : '—'}</td>
   </tr>`;
-  return reportShell('Relatório de Preventivas de Ar-Condicionado', overdue, upcoming, rowHtml, ['Frota','Veículo','Empresa','Configuração A/C','Situação','Previsão próxima']);
+
+  const overdueSection = overdue.length ? `
+    <h2 class="sec-overdue">Vencidas — providenciar urgente <span class="count-badge">${overdue.length}</span></h2>
+    <table class="report-table">
+      <thead><tr><th>Frota</th><th>Veículo</th><th>Empresa</th><th>Configuração A/C</th><th>Situação</th><th>Dia que venceu</th></tr></thead>
+      <tbody>${overdue.map(overdueRowHtml).join('')}</tbody>
+    </table>` : `<h2 class="sec-overdue">Vencidas — providenciar urgente</h2><p class="report-empty">Nenhum item nesta categoria.</p>`;
+  const upcomingSection = upcoming.length ? `
+    <h2 class="sec-upcoming">Próximas (atenção) <span class="count-badge">${upcoming.length}</span></h2>
+    <table class="report-table">
+      <thead><tr><th>Frota</th><th>Veículo</th><th>Empresa</th><th>Configuração A/C</th><th>Situação</th><th>Previsão</th></tr></thead>
+      <tbody>${upcoming.map(upcomingRowHtml).join('')}</tbody>
+    </table>` : `<h2 class="sec-upcoming">Próximas (atenção)</h2><p class="report-empty">Nenhum item nesta categoria.</p>`;
+
+  return `
+    <div class="report">
+      <div class="report-header">
+        <img src="data:image/png;base64,${BRT_LOGO_B64}" class="report-logo-brt" alt="BRT">
+        <div class="report-title">
+          <h1>Relatório de Preventivas de Ar-Condicionado</h1>
+          <div class="report-sub">Frota BRT · Gerado em ${dataGerado}</div>
+        </div>
+        <img src="data:image/png;base64,${MAAS_LOGO_B64}" class="report-logo-maas" alt="m.aas">
+      </div>
+      ${overdueSection}
+      ${upcomingSection}
+      <div class="report-footer">Documento gerado automaticamente pelo Painel de Preventivas — Frota BRT · BY Gustavo Coutinho</div>
+    </div>`;
 }
 
 function buildVeiculosReportHtml(){
